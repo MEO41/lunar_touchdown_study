@@ -116,8 +116,10 @@ footpad_material_api.CreateRestitutionAttr(0.0)
 faces = np.load(arguments.faces)
 face_tree = cKDTree(np.c_[faces["centroid_east"], faces["centroid_north"]])
 face_zone = faces["zone_id"]
-face_mu_static = faces["mu_static"]
+face_mu_static = faces["mu_static"]          # continuous soil value of each face (before zoning)
 face_mu_dynamic = faces["mu_dynamic"]
+# PhysX applies ONE coefficient pair per zone (the zone table of the overlay), not the continuous face value
+zone_table = {zone["zone_id"]: zone for zone in json.loads(arguments.overlay.with_suffix(".json").read_text())["zone_table"]["zones"]}
 
 # ------------------------------------------------------------------------------------------------------- terrain heights
 
@@ -226,9 +228,12 @@ def support_margin_m(contact_points_xy, center_of_mass_xy):
 
 
 def zone_at(east, north):
-    """Friction zone, static and dynamic coefficient of the terrain face nearest to (east, north) (overlay map, both modes)."""
+    """Terrain face nearest to (east, north) (overlay map, both modes): zone id, the zone's coefficients (what PhysX applies in
+    heterogeneous mode) and the face's continuous soil coefficients (before zoning)."""
     _, index = face_tree.query([east, north])
-    return int(face_zone[index]), float(face_mu_static[index]), float(face_mu_dynamic[index])
+    zone = int(face_zone[index])
+    return (zone, float(zone_table[zone]["mu_static"]), float(zone_table[zone]["mu_dynamic"]),
+            float(face_mu_static[index]), float(face_mu_dynamic[index]))
 
 
 # ------------------------------------------------------------------------------------------------------- contact capture
@@ -429,14 +434,14 @@ for batch_start in range(0, len(sites), arguments.batch):
         for k in PADS:
             first = recorder.first_contact_point.get(k)
             last = recorder.last_contact_point.get(k, lowest_point[k])
-            zone, mu_static, mu_dynamic = zone_at(last[0], last[1])
+            zone, mu_static, mu_dynamic, soil_mu_static, soil_mu_dynamic = zone_at(last[0], last[1])
             effective = (mu_static, mu_dynamic) if arguments.friction_mode == "heterogeneous" else UNIFORM_FRICTION
             pads[k] = dict(first_contact_s=recorder.first_contact_time.get(k), first_contact_east_north=None if first is None else [float(first[0]), float(first[1])],
                            final_contact_east_north=[float(last[0]), float(last[1])],
                            slip_m=None if first is None else float(np.hypot(last[0] - first[0], last[1] - first[1])),
                            peak_load_share=recorder.peak_share[k], final_load_share=final_shares[k], final_gap_cm=gaps[k] * 100,
-                           friction_zone=zone, zone_mu_static=mu_static, zone_mu_dynamic=mu_dynamic, effective_mu_static=float(effective[0]),
-                           effective_mu_dynamic=float(effective[1]))
+                           friction_zone=zone, zone_mu_static=mu_static, zone_mu_dynamic=mu_dynamic, soil_mu_static=soil_mu_static,
+                           soil_mu_dynamic=soil_mu_dynamic, effective_mu_static=float(effective[0]), effective_mu_dynamic=float(effective[1]))
         loaded_mu = [pads[k]["effective_mu_static"] for k in PADS if pads[k]["first_contact_s"] is not None]
         contact_order = sorted(recorder.first_contact_time, key=recorder.first_contact_time.get)
         results.append(dict(
@@ -464,7 +469,7 @@ arguments.out.write_text(json.dumps(dict(
     args=dict(friction_mode=arguments.friction_mode, touchdown_speed=arguments.touchdown_speed, horizontal_speed=arguments.horizontal_speed,
               clearance=arguments.clearance, seed=arguments.seed, points=arguments.points.name, overlay=str(arguments.overlay),
               faces=str(arguments.faces), mass=float(MASS), com=list(map(float, center_of_mass_local)), gravity=GRAVITY,
-              footpad_contact_friction=FOOTPAD_CONTACT_FRICTION, uniform_friction=UNIFORM_FRICTION,
+              footpad_contact_friction=FOOTPAD_CONTACT_FRICTION, uniform_friction=UNIFORM_FRICTION, pad_friction_record="zone_table",
               note="terrain friction from SYNTHETIC soil fields (lunar_regolith, uncalibrated); rigid terrain (Phase 1)",
               provenance=study_paths.git_provenance()),
     results=results)))

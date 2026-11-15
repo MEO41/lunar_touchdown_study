@@ -60,8 +60,32 @@ def outcome(landing, tolerance_deg=5.0):
     return "upright" if upright else "tilted"
 
 
+def correct_pad_friction(data):
+    """Pad friction as PhysX applied it, for result files written before the touchdown script recorded the zone table value.
+
+    Those files stored the nearest face's CONTINUOUS soil coefficient as zone_mu_* / effective_mu_*, while PhysX applies one coefficient
+    pair per zone.  The zone id was recorded correctly, so the applied value is recovered from the overlay's zone table (no re-run needed;
+    the simulation itself was not affected).  Recomputes pad_mu_contrast over the pads that touched down."""
+    arguments, results = data["args"], data["results"]
+    if arguments.get("pad_friction_record") == "zone_table":
+        return results
+    table_path = Path(arguments["overlay"]).with_suffix(".json")
+    zones = {z["zone_id"]: z for z in json.loads(table_path.read_text())["zone_table"]["zones"]}
+    heterogeneous = arguments["friction_mode"] == "heterogeneous"
+    for landing in results:
+        for pad in landing["pads"].values():
+            zone = zones[pad["friction_zone"]]
+            pad["soil_mu_static"], pad["soil_mu_dynamic"] = pad["zone_mu_static"], pad["zone_mu_dynamic"]
+            pad["zone_mu_static"], pad["zone_mu_dynamic"] = zone["mu_static"], zone["mu_dynamic"]
+            if heterogeneous:
+                pad["effective_mu_static"], pad["effective_mu_dynamic"] = zone["mu_static"], zone["mu_dynamic"]
+        loaded = [p["effective_mu_static"] for p in landing["pads"].values() if p["first_contact_s"] is not None]
+        landing["pad_mu_contrast"] = max(loaded) - min(loaded) if len(loaded) >= 2 else 0.0
+    return results
+
+
 def load_results():
-    """{(mode, speed): results list} for every result file found (soil-annotated version preferred)."""
+    """{(mode, speed): results list} for every result file found (soil-annotated version preferred), pad friction as applied."""
     found = {}
     for path in sorted(RENDERS.glob("heterogeneous_touchdown_*_v*.json")):
         match = re.fullmatch(r"heterogeneous_touchdown_(uniform|heterogeneous)_v([0-9.]+)(_soil)?\.json", path.name)
@@ -70,7 +94,7 @@ def load_results():
         key = (match.group(1), float(match.group(2)))
         if key in found and not match.group(3):
             continue
-        found[key] = json.loads(path.read_text())["results"]
+        found[key] = correct_pad_friction(json.loads(path.read_text()))
     return found
 
 
@@ -112,15 +136,15 @@ def load_controls():
     for path in sorted(CONTROLS_DIRECTORY.glob("heterogeneous_touchdown_*_v*_*.json")):
         match = re.fullmatch(r"heterogeneous_touchdown_(uniform|heterogeneous)_v([0-9.]+)_(repeat|perturbed_mu[0-9.]+)\.json", path.name)
         if match:
-            found[(match.group(1), float(match.group(2)), match.group(3))] = json.loads(path.read_text())["results"]
+            found[(match.group(1), float(match.group(2)), match.group(3))] = correct_pad_friction(json.loads(path.read_text()))
     return found
 
 
 def control_label(mode, speed, control):
     """Short label of a control comparison for tables and figures."""
     if control == "repeat":
-        return f"{mode} run twice\n{speed:g} m/s"
-    return f"{mode} 0.80 vs {control[len('perturbed_mu'):]}\n{speed:g} m/s"
+        return f"{mode}\nrun twice\n{speed:g} m/s"
+    return f"{mode}\n0.80 vs {control[len('perturbed_mu'):]}\n{speed:g} m/s"
 
 
 def paired(uniform, heterogeneous):
@@ -219,19 +243,18 @@ def pad_slip_figure(found, speeds, path):
         slip = np.maximum(np.array([p["slip_m"] for r in heterogeneous for p in r["pads"].values() if p["slip_m"] is not None]), 1e-3)
         if mu.size:
             axis.scatter(mu, slip, s=6, color=MODE_COLORS["heterogeneous"], alpha=0.45, linewidth=0)
-            edges = np.quantile(mu, np.linspace(0, 1, 9))
             centers, medians = [], []
-            for a, b in zip(edges[:-1], edges[1:]):
-                inside = (mu >= a) & (mu <= b)
+            for zone_value in np.unique(mu):                     # one point per friction zone (PhysX applies discrete zone values)
+                inside = mu == zone_value
                 if inside.sum() > 5:
-                    centers.append(float(np.median(mu[inside])))
+                    centers.append(float(zone_value))
                     medians.append(float(np.median(slip[inside])))
-            axis.plot(centers, medians, color=INK, lw=2, marker="o", ms=4, label="median per friction bin")
+            axis.plot(centers, medians, color=INK, lw=2, marker="o", ms=4, label="median per friction zone")
         uniform_slip = median([p["slip_m"] for r in found.get(("uniform", speed), []) for p in r["pads"].values() if p["slip_m"] is not None])
         if np.isfinite(uniform_slip):
             axis.axhline(uniform_slip, color=MODE_COLORS["uniform"], lw=1.5, ls="--", label=f"uniform-run median ({uniform_slip:.2f} m)")
         axis.set_yscale("log")
-        axis.set_xlabel("static friction under the pad (zone)")
+        axis.set_xlabel("static friction applied under the pad (zone value)")
         axis.set_ylabel("footpad slip from first contact to rest (m, log)")
         axis.set_title(f"touchdown {speed:g} m/s", fontsize=10, color=INK)
         axis.grid(True, color=GRID, lw=0.5)
@@ -248,14 +271,14 @@ def noise_floor_figure(comparisons, path):
               for label, _, is_control in comparisons]
     panels = (("outcome_changes", "Sites whose outcome class changed (of 300)"),
               ("peak_tilt_absolute_difference_median_deg", "Median |peak tilt difference| (deg)"))
-    figure, axes = plt.subplots(1, 3, figsize=(13.5, 4.2), constrained_layout=True)
+    figure, axes = plt.subplots(1, 3, figsize=(15, 4.8), constrained_layout=True)
     for axis, (key, title) in zip(axes[:2], panels):
         values = [statistics[key] for _, statistics, _ in comparisons]
         bars = axis.bar(range(len(values)), values, 0.7, color=colors)
         for bar, value in zip(bars, values):
             axis.text(bar.get_x() + bar.get_width() / 2, bar.get_height(), f"{value:.2f}" if isinstance(value, float) else str(value),
                       ha="center", va="bottom", fontsize=8, color=INK)
-        axis.set_xticks(range(len(values)), labels, fontsize=8)
+        axis.set_xticks(range(len(values)), labels, fontsize=7.5)
         axis.set_title(title, fontsize=10, color=INK)
         axis.grid(True, axis="y", color=GRID, lw=0.6)
         axis.set_axisbelow(True)
@@ -274,8 +297,9 @@ def noise_floor_figure(comparisons, path):
     axis.set_title("Site-by-site |peak tilt difference|, 3 m/s", fontsize=10, color=INK)
     axis.grid(True, color=GRID, lw=0.5)
     axis.legend(fontsize=7, frameon=False, loc="lower right")
-    figure.suptitle("Is the heterogeneous-friction effect larger than the landings' sensitivity to any small change?  orange: heterogeneous vs "
-                    "uniform;  blue: uniform 0.80 vs 0.82;  grey: identical re-run\nSYNTHETIC soil friction, rigid terrain", fontsize=11)
+    figure.suptitle("Is the heterogeneous-friction effect larger than the landings' sensitivity to any small change?\n"
+                    "orange: heterogeneous vs uniform 0.80;  blue: uniform 0.80 vs 0.82;  grey: identical re-run.  "
+                    "SYNTHETIC soil friction, rigid terrain, same 300 sites", fontsize=11)
     figure.savefig(path, dpi=130)
     plt.close(figure)
 
@@ -304,7 +328,7 @@ def main():
     for speed in speeds:
         pairs = paired(found.get(("uniform", speed), []), found.get(("heterogeneous", speed), []))
         if pairs:
-            comparisons.append((f"heterogeneous vs\nuniform {speed:g} m/s", dict(pair_statistics(pairs), peak_tilt_differences=[
+            comparisons.append((f"heterogeneous\nvs uniform\n{speed:g} m/s", dict(pair_statistics(pairs), peak_tilt_differences=[
                 b["peak_tilt_deg"] - a["peak_tilt_deg"] for a, b in pairs]), False))
     for (mode, speed, control), control_results in sorted(controls.items()):
         pairs = paired(found.get((mode, speed), []), control_results)
