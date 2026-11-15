@@ -33,7 +33,7 @@ three repositories that produced it.
 | Phase | Content | Status |
 |---|---|---|
 | **1. Static heterogeneous terrain** | NAC terrain as a USD collider with **spatially varying friction materials** from the soil fields. Footpad contacts are linked to soil properties. Touchdowns on real slopes and uneven ground, measuring stability and footpad load distribution. | done (findings below) |
-| 2. Deformable regolith | Per-footpad soil queries, pressure-sinkage, differential penetration, shear and lateral displacement, terrain deformation, soft pockets and depth-dependent layers, coupled to the lander's 6-DoF dynamics. | next |
+| 2. Deformable regolith | Per-footpad soil queries, pressure-sinkage, differential penetration, shear and lateral displacement, terrain deformation, soft pockets and depth-dependent layers, coupled to the lander's 6-DoF dynamics. | started (preview below) |
 | 3. Uncertain terrain, risk-aware control | Estimating soil before touchdown, landing-site suitability, predicting differential settlement, trajectories and touchdown speeds, control robust to uncertain soil, partial or asymmetric contact. | later |
 
 ## Setup
@@ -134,10 +134,47 @@ table, and the touchdown script now records both values. The simulations were no
 | ![paired](docs/images/heterogeneous_touchdown_paired.png) | ![pad slip](docs/images/heterogeneous_touchdown_pad_slip.png) |
 | The same site in both modes | Footpad slip against the friction zone under the pad |
 
+## Phase 2 preview: one footpad sinking into a soft pocket
+
+```bash
+experiments/phase2_deformable/run_phase2.sh all     # select -> simulate (Isaac) -> render (Isaac, RTX) -> plot
+```
+
+**Site.** The site is picked from the Phase 1 soil annotation (`select_soft_pocket_site.py`):
+- one pad stands over a synthetic soft pocket starting at most 0.7 m down;
+- the other three pads have no pocket under them;
+- the site is gentle and upright in Phase 1.
+
+The chosen site is **site 56**: slope 0.3°, pocket under pad +X starting 0.45 m below the surface.
+
+**Simulation.** The 406 Near2m faces above the pocket get a **compliant contact material**: a PhysX spring and damper per contact
+point, 600 N/m and 700 N s/m. A rigid stop 0.5 m down stands for the firm material under the pocket. All other ground stays rigid,
+and the same site is also run fully rigid. These compliance values are **illustrative**: they were chosen so that the pocket visibly
+gives way. They are not yet derived from soil mechanics; deriving them is the Phase 2 work.
+
+**Result (1 m/s).**
+
+| | soft pocket under pad +X | rigid ground |
+|---|---|---|
+| depth of pad +X | **51 cm**, reaching the stop | 0 cm |
+| depth of the other three pads | under 2 cm | 0 cm |
+| final tilt (site slope 0.3°) | **8.2°** | 1.1° |
+
+- **Sequence.** Pads +Y and −Y touch down first at 0.3 s. The lander rolls onto +X at 2.4 s, and that pad sinks for about 5 s until
+  it reaches the stop. The opposite pad, −X, ends up 59 cm above the ground.
+- **What it shows.** The mechanism of the research question, differential settlement turning into tilt, works in the engine and can
+  be measured.
+- **What is still illustrative.** The sinkage depth and its rate follow from the illustrative stiffness and stop depth, so they are
+  not predictions.
+
+![soft pocket sequence](docs/images/soft_pocket_touchdown_sequence.jpg)
+![soft pocket time series](docs/images/soft_pocket_touchdown_timeseries.png)
+
 ## Layout
 
 ```
 common/study_paths.py                     paths (.env.local / submodules) and git provenance
+experiments/phase2_deformable/            run_phase2.sh, select_soft_pocket_site.py, render_soft_pocket_touchdown.py (Isaac), plot_soft_pocket_touchdown.py
 experiments/phase1_static_friction/       run_phase1.sh, verify_friction_zones_in_physx.py (Isaac), heterogeneous_touchdown_test.py (Isaac),
                                           annotate_footpad_soil.py, plot_heterogeneous_touchdown.py
 external/                                 pinned submodules: lunar_regolith, apollo_lander_modeling

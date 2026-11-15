@@ -19,6 +19,13 @@ share history (split of PhysX's contact impulses - their absolute size carries a
 support margin of the COM during the landing, per-pad slip, the friction zone under each pad, and the final state classified as in
 plot_drop_test.py (lander repository).  Output: results/phase1/touchdown/heterogeneous_touchdown_<mode>_v<speed>[_h<h>].json;
 annotate_footpad_soil.py adds full soil states.
+
+Phase 2 preview options (off by default; Phase 1 runs are unchanged):
+  --sites I [I ...]     only these site indices (of --points)
+  --soft-pocket FILE    soft_pocket_site.json (phase2_deformable/select_soft_pocket_site.py): the listed Near2m faces get a COMPLIANT contact
+                        material (PhysX spring + damper per contact point, same friction as the uniform material), and a small rigid copy
+                        of those faces stop_depth below the surface stops the pad there.  All other terrain stays rigid.  Uniform mode only.
+  --record-poses        also store the lander pose and every pad's depth below the terrain surface over time (for rendering and plots)
 """
 import argparse
 import json
@@ -51,7 +58,12 @@ parser.add_argument("--batch", type=int, default=25)
 parser.add_argument("--max-seconds", type=float, default=30.0, help="simulated seconds per batch")
 parser.add_argument("--detailed-seconds", type=float, default=4.0, help="record every physics step for this long after release")
 parser.add_argument("--out", type=Path, default=None)
+parser.add_argument("--sites", type=int, nargs="+", default=None, help="only these site indices")
+parser.add_argument("--soft-pocket", type=Path, default=None, help="soft_pocket_site.json: make these terrain faces compliant (uniform mode)")
+parser.add_argument("--record-poses", action="store_true", help="store pose and pad-depth histories")
 arguments = parser.parse_args()
+if arguments.soft_pocket and arguments.friction_mode != "uniform":
+    parser.error("--soft-pocket needs --friction-mode uniform (one material-binding family per mesh)")
 if arguments.out is None:
     horizontal_suffix = f"_h{arguments.horizontal_speed:g}" if arguments.horizontal_speed > 0 else ""
     arguments.out = study_paths.phase_results_directory("phase1", "touchdown") / f"heterogeneous_touchdown_{arguments.friction_mode}_v{arguments.touchdown_speed:g}{horizontal_suffix}.json"
@@ -107,6 +119,45 @@ else:
     material_api.GetDynamicFrictionAttr().Set(UNIFORM_FRICTION[1])
     regolith_material.AddAppliedSchema("PhysxMaterialAPI")
     regolith_material.CreateAttribute("physxMaterial:frictionCombineMode", Sdf.ValueTypeNames.Token).Set("multiply")
+soft_pocket = json.loads(arguments.soft_pocket.read_text()) if arguments.soft_pocket else None
+if soft_pocket:
+    from pxr import Vt  # noqa: E402
+    compliance = soft_pocket["compliance"]
+    pocket_face_indices = np.array(soft_pocket["pocket"]["face_indices"], dtype=np.int32)
+    terrain_mesh_prim = stage.GetPrimAtPath(TERRAIN_MESH_PATH)
+    pocket_material = UsdShade.Material.Define(stage, "/World/Terrain/PhysicsMaterials/SoftPocket")
+    pocket_physics = UsdPhysics.MaterialAPI.Apply(pocket_material.GetPrim())
+    pocket_physics.CreateStaticFrictionAttr(UNIFORM_FRICTION[0])
+    pocket_physics.CreateDynamicFrictionAttr(UNIFORM_FRICTION[1])
+    pocket_physics.CreateRestitutionAttr(0.0)
+    pocket_material.GetPrim().AddAppliedSchema("PhysxMaterialAPI")
+    pocket_material.GetPrim().CreateAttribute("physxMaterial:frictionCombineMode", Sdf.ValueTypeNames.Token).Set("multiply")
+    pocket_material.GetPrim().CreateAttribute("physxMaterial:compliantContactStiffness", Sdf.ValueTypeNames.Float).Set(
+        float(compliance["stiffness_per_contact_N_per_m"]))
+    pocket_material.GetPrim().CreateAttribute("physxMaterial:compliantContactDamping", Sdf.ValueTypeNames.Float).Set(
+        float(compliance["damping_per_contact_N_s_per_m"]))
+    terrain_binding = UsdShade.MaterialBindingAPI.Apply(terrain_mesh_prim)
+    pocket_subset = terrain_binding.CreateMaterialBindSubset("SoftPocket", Vt.IntArray.FromNumpy(pocket_face_indices), UsdGeom.Tokens.face)
+    UsdShade.MaterialBindingAPI.Apply(pocket_subset.GetPrim()).Bind(pocket_material, UsdShade.Tokens.weakerThanDescendants, "physics")
+    terrain_binding.SetMaterialBindSubsetsFamilyType(UsdGeom.Tokens.nonOverlapping)
+    # rigid stop: the pocket faces only, stop_depth below the surface (the firm material under the pocket)
+    terrain_mesh = UsdGeom.Mesh(terrain_mesh_prim)
+    terrain_points = np.array(terrain_mesh.GetPointsAttr().Get(), np.float64)
+    triangles = np.array(terrain_mesh.GetFaceVertexIndicesAttr().Get(), np.int64).reshape(-1, 3)[pocket_face_indices]
+    used_vertices, stop_indices = np.unique(triangles.ravel(), return_inverse=True)
+    stop_points = terrain_points[used_vertices] - [0.0, 0.0, float(compliance["stop_depth_m"])]
+    stop_mesh = UsdGeom.Mesh.Define(stage, "/World/Terrain/SoftPocketStop")
+    stop_mesh.CreatePointsAttr([Gf.Vec3f(*map(float, point)) for point in stop_points])
+    stop_mesh.CreateFaceVertexCountsAttr([3] * len(triangles))
+    stop_mesh.CreateFaceVertexIndicesAttr([int(i) for i in stop_indices])
+    stop_mesh.CreateVisibilityAttr(UsdGeom.Tokens.invisible)
+    UsdPhysics.CollisionAPI.Apply(stop_mesh.GetPrim())
+    UsdPhysics.MeshCollisionAPI.Apply(stop_mesh.GetPrim()).CreateApproximationAttr("none")
+    UsdShade.MaterialBindingAPI.Apply(stop_mesh.GetPrim()).Bind(UsdShade.Material(regolith_material), UsdShade.Tokens.strongerThanDescendants, "physics")
+    for _ in range(10):
+        simulation_application.update()
+    print(f"soft pocket: {len(pocket_face_indices)} compliant faces (k {compliance['stiffness_per_contact_N_per_m']} N/m, "
+          f"c {compliance['damping_per_contact_N_s_per_m']} N s/m per contact point), rigid stop {compliance['stop_depth_m']} m below", flush=True)
 footpad_material = UsdShade.Material.Define(stage, "/World/LanderContactMaterial")
 footpad_material_api = UsdPhysics.MaterialAPI.Apply(footpad_material.GetPrim())
 footpad_material_api.CreateStaticFrictionAttr(FOOTPAD_CONTACT_FRICTION)
@@ -186,6 +237,8 @@ sites = json.loads(arguments.points.read_text())["points"]
 for index, site in enumerate(sites):
     site["site_index"] = index
     site["random_heading_deg"] = float(np.random.default_rng([arguments.seed, index]).uniform(0, 360))
+if arguments.sites:
+    sites = [sites[i] for i in arguments.sites]
 if arguments.limit:
     sites = sites[:arguments.limit]
 outside = [s for s in sites if max(abs(s["x"]), abs(s["y"])) > near_surface.half_size - 20]
@@ -279,6 +332,20 @@ class LandingRecorder:
         self.history = []
         self.rest_time = None
         self.body_contact_seen = False
+        self.pose_series = []                  # [t, x, y, z, qw, qx, qy, qz]   (--record-poses)
+        self.pad_depth_series = []             # [t, depth +X, +Y, -X, -Y] in m below the terrain surface (negative gap)
+
+    def record_pose(self, time_s, transform):
+        """Store the pose and each pad's depth below the terrain surface (deepest dish point; 0 when above the surface)."""
+        translation = transform.ExtractTranslation()
+        quaternion = transform.ExtractRotation().GetQuat()
+        self.pose_series.append([round(time_s, 4), *[round(float(v), 5) for v in translation], round(float(quaternion.GetReal()), 6),
+                                 *[round(float(v), 6) for v in quaternion.GetImaginary()]])
+        depths = []
+        for k in PADS:
+            world = [transform.Transform(Gf.Vec3d(*point)) for point in pad_dish_points[k]]
+            depths.append(round(max(0.0, max(near_surface.height(w[0], w[1]) - w[2] for w in world)), 4))
+        self.pad_depth_series.append([round(time_s, 4), *depths])
 
     def record_step(self, time_s, transform, rows, keep_series, step_seconds):
         """Process one physics step: assign contacts to pads, update load shares, contact times, tilt and support margin.
@@ -401,6 +468,8 @@ for batch_start in range(0, len(sites), arguments.batch):
             transform = cache.GetLocalToWorldTransform(recorder.prim)
             recorder.record_step(time_s, transform, rows_by_lander.get(lander_index, []), detailed and step % 2 == 0,
                                  PHYSICS_STEP_SECONDS if detailed else 10 * PHYSICS_STEP_SECONDS)
+            if arguments.record_poses and (step % 2 == 0 or not detailed):
+                recorder.record_pose(time_s, transform)
             if step % 30 == 0:
                 translation = np.array(transform.ExtractTranslation())
                 up = np.array(transform.TransformDir(Gf.Vec3d(0, 0, 1)))
@@ -455,7 +524,9 @@ for batch_start in range(0, len(sites), arguments.batch):
             body_contact=recorder.body_contact_seen,
             slide_m=float(np.hypot(translation[0] - site["x"], translation[1] - site["y"])), rest_s=recorder.rest_time,
             final=[float(v) for v in translation], pad_mu_contrast=(max(loaded_mu) - min(loaded_mu)) if len(loaded_mu) >= 2 else 0.0,
-            pads=pads, series_columns=["t_s", "tilt_deg", *[f"share_{k}" for k in PADS], "share_body"], series=recorder.series))
+            pads=pads, series_columns=["t_s", "tilt_deg", *[f"share_{k}" for k in PADS], "share_body"], series=recorder.series,
+            **(dict(pose_series=recorder.pose_series, pad_depth_series=recorder.pad_depth_series,
+                    pad_depth_columns=["t_s", *[f"depth_{k}_m" for k in PADS]]) if arguments.record_poses else {})))
     fallen = [r.release_height - cache.GetLocalToWorldTransform(r.prim).ExtractTranslation()[2] for r in recorders.values()]
     if not any(abs(f) > 0.01 for f in fallen) or timeline_time <= 0:
         raise SystemExit("PhysX did not simulate this batch (landers did not move) - check the log for PhysX / CUDA errors")
@@ -470,6 +541,8 @@ arguments.out.write_text(json.dumps(dict(
               clearance=arguments.clearance, seed=arguments.seed, points=arguments.points.name, overlay=str(arguments.overlay),
               faces=str(arguments.faces), mass=float(MASS), com=list(map(float, center_of_mass_local)), gravity=GRAVITY,
               footpad_contact_friction=FOOTPAD_CONTACT_FRICTION, uniform_friction=UNIFORM_FRICTION, pad_friction_record="zone_table",
+              sites=arguments.sites, soft_pocket=None if not soft_pocket else dict(file=str(arguments.soft_pocket), compliance=soft_pocket["compliance"],
+                                                                                    faces=len(soft_pocket["pocket"]["face_indices"])),
               note="terrain friction from SYNTHETIC soil fields (lunar_regolith, uncalibrated); rigid terrain (Phase 1)",
               provenance=study_paths.git_provenance()),
     results=results)))
