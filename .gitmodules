@@ -1,0 +1,6 @@
+[submodule "external/lunar_regolith"]
+	path = external/lunar_regolith
+	url = https://github.com/MEO41/lunar_regolith.git
+[submodule "external/apollo_lander_modeling"]
+	path = external/apollo_lander_modeling
+	url = https://github.com/MEO41/isaac-lunar-terrain-setup-apollo.git
