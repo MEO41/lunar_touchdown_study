@@ -31,7 +31,9 @@ Do not build lander- or rover-specific terramechanics inside lunar_regolith, and
 - Every result file records `study_paths.git_provenance()` (commits of all three repositories).
 - Isaac scripts run through the lander repository's `isaac_run.sh` (Isaac Sim 6 Python, see its `.env.local`); they may
   import only numpy / scipy / pxr / Isaac modules plus `common/study_paths.py` and `lunar_regolith.contact.{friction_zones,usd_terrain}`.
-  Analysis scripts run with the lunar_regolith Python (`REGOLITH_PYTHON`).
+  Analysis scripts run with the lunar_regolith Python (`REGOLITH_PYTHON`). Project Chrono scripts (`experiments/phase2_crosscheck/chrono_*.py`)
+  run with `CHRONO_PYTHON` (PyChrono 10 from the conda channel `projectchrono`; the conda-forge build lacks the vehicle/SCM module) and may
+  import only numpy, pychrono and `common/`.
 - Descriptive names (no cryptic abbreviations) and a docstring on every function, as in the lander repository.
 - All soil and friction values are SYNTHETIC / uncalibrated unless calibrated against measurements; label them so in
   figures, metadata and text. The NAC DTM surface is observed data and must never be modified.
