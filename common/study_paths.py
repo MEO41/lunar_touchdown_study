@@ -9,6 +9,7 @@ Repository locations (first match wins):
     REGOLITH_PYTHON        Python with lunar_regolith installed  (default <REGOLITH_REPOSITORY>/.venv/bin/python)
     REGOLITH_CONFIG        soil configuration, relative to REGOLITH_REPOSITORY  (default config/apollo17_lander_site.yaml)
     REGOLITH_RUN_NAME      generated soil run under <REGOLITH_REPOSITORY>/outputs  (default apollo17_lander_site)
+    CHRONO_PYTHON          Python with PyChrono (Project Chrono, conda channel projectchrono) for the Phase 2 cross-check  (default: none)
 The submodules pin exact commits; working copies elsewhere (with their large data already built) can be used through .env.local.
 Every result records git_provenance(), so it is always known which commits produced it.
 """
@@ -43,6 +44,7 @@ REGOLITH_PYTHON = Path(setting("REGOLITH_PYTHON", REGOLITH_REPOSITORY / ".venv" 
 REGOLITH_CONFIG = setting("REGOLITH_CONFIG", "config/apollo17_lander_site.yaml")
 REGOLITH_RUN_NAME = setting("REGOLITH_RUN_NAME", "apollo17_lander_site")
 REGOLITH_RUN_DIRECTORY = REGOLITH_REPOSITORY / "outputs" / REGOLITH_RUN_NAME
+CHRONO_PYTHON = setting("CHRONO_PYTHON", "")
 
 LANDER_SCENE = LANDER_REPOSITORY / "scene" / "apollo17_scene.usd"
 LANDER_USD = LANDER_REPOSITORY / "usd" / "apollo_lunar_module.usd"
@@ -84,5 +86,5 @@ if __name__ == "__main__":
     for name, value in (("STUDY_ROOT", STUDY_ROOT), ("LANDER_REPOSITORY", LANDER_REPOSITORY), ("REGOLITH_REPOSITORY", REGOLITH_REPOSITORY),
                         ("REGOLITH_PYTHON", REGOLITH_PYTHON), ("REGOLITH_CONFIG", REGOLITH_CONFIG), ("REGOLITH_RUN_NAME", REGOLITH_RUN_NAME),
                         ("REGOLITH_RUN_DIRECTORY", REGOLITH_RUN_DIRECTORY), ("LANDER_SCENE", LANDER_SCENE),
-                        ("LANDER_ISAAC_RUNNER", LANDER_ISAAC_RUNNER), ("RESULTS_ROOT", RESULTS_ROOT)):
+                        ("LANDER_ISAAC_RUNNER", LANDER_ISAAC_RUNNER), ("RESULTS_ROOT", RESULTS_ROOT), ("CHRONO_PYTHON", CHRONO_PYTHON)):
         print(f"{name}='{value}'")

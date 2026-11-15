@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Phase 2 - deformable regolith.  Steps so far (preview: one footpad sinking into a soft pocket):
-#   select    pick a site where exactly one pad stands over a shallow soft pocket; list the terrain faces above the pocket
-#   simulate  [speed]  that site twice in Isaac Sim: pocket faces compliant (ILLUSTRATIVE stiffness) and all-rigid (default 1 m/s)
-#   render    path-traced sequence of the sinking pad and the rigid comparison (docs/images/soft_pocket_touchdown_sequence.jpg)
-#   plot      pad depth and lander tilt over time (docs/images/soft_pocket_touchdown_timeseries.png)
-#   all       select simulate render plot
+# Phase 2 - deformable regolith.
+#   select          sites where exactly one pad stands over a shallow soft pocket (from the Phase 1 soil annotation)
+#   columns         soil columns around each of those sites: heterogeneous (as generated) and a uniform control
+#   soil-touchdown  [speeds...]  Isaac Sim: per-footpad pressure-sinkage + shear (lunar_regolith.contact.sinkage), both soil modes (default 1 2 3)
+#   soil-plot       comparison table and figure
+#   preview steps (compliant-contact illustration, ILLUSTRATIVE stiffness):  simulate [speed] | render | plot
+#   all             select columns soil-touchdown soil-plot
 # Requires Phase 1 results (run_phase1.sh soil touchdown annotate).  Results: results/phase2/ (git-ignored).
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -37,11 +38,31 @@ step_render() {
 
 step_plot() { echo "== plot"; "$REGOLITH_PYTHON" "$HERE/plot_soft_pocket_touchdown.py"; }
 
+step_columns() { echo "== columns"; "$REGOLITH_PYTHON" "$HERE/prepare_soil_columns.py" 2>&1 | grep -v "^Warning"; }
+
+step_soil_touchdown() {
+  local speeds=("$@")
+  [ ${#speeds[@]} -eq 0 ] && speeds=(1 2 3)
+  for speed in "${speeds[@]}"; do
+    for mode in heterogeneous uniform; do
+      local log="$LOGS/soil_touchdown_${mode}_v${speed}.log"
+      echo "== soil touchdown ${mode} ${speed} m/s (log $log)"
+      ISAAC_LOG="$log" "$LANDER_ISAAC_RUNNER" "$HERE/soil_touchdown.py" --soil-mode "$mode" --touchdown-speed "$speed" --max-seconds 40
+      grep -E "^site|^saved" "$log"
+    done
+  done
+}
+
+step_soil_plot() { echo "== soil plot"; "$REGOLITH_PYTHON" "$HERE/plot_soil_touchdown.py"; }
+
 case "${1:-}" in
   select) step_select ;;
   simulate) shift; step_simulate "$@" ;;
   render) step_render ;;
   plot) step_plot ;;
-  all) step_select; step_simulate; step_render; step_plot ;;
-  *) sed -n '2,8p' "$0"; exit 2 ;;
+  columns) step_columns ;;
+  soil-touchdown) shift; step_soil_touchdown "$@" ;;
+  soil-plot) step_soil_plot ;;
+  all) step_select; step_columns; step_soil_touchdown; step_soil_plot ;;
+  *) sed -n '2,9p' "$0"; exit 2 ;;
 esac

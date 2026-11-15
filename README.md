@@ -33,7 +33,7 @@ three repositories that produced it.
 | Phase | Content | Status |
 |---|---|---|
 | **1. Static heterogeneous terrain** | NAC terrain as a USD collider with **spatially varying friction materials** from the soil fields. Footpad contacts are linked to soil properties. Touchdowns on real slopes and uneven ground, measuring stability and footpad load distribution. | done (findings below) |
-| 2. Deformable regolith | Per-footpad soil queries, pressure-sinkage, differential penetration, shear and lateral displacement, terrain deformation, soft pockets and depth-dependent layers, coupled to the lander's 6-DoF dynamics. | started (preview below) |
+| 2. Deformable regolith | Per-footpad soil queries, pressure-sinkage, differential penetration, shear and lateral displacement, terrain deformation, soft pockets and depth-dependent layers, coupled to the lander's 6-DoF dynamics. | in progress (first results below) |
 | 3. Uncertain terrain, risk-aware control | Estimating soil before touchdown, landing-site suitability, predicting differential settlement, trajectories and touchdown speeds, control robust to uncertain soil, partial or asymmetric contact. | later |
 
 ## Setup
@@ -134,7 +134,61 @@ table, and the touchdown script now records both values. The simulations were no
 | ![paired](docs/images/heterogeneous_touchdown_paired.png) | ![pad slip](docs/images/heterogeneous_touchdown_pad_slip.png) |
 | The same site in both modes | Footpad slip against the friction zone under the pad |
 
-## Phase 2 preview: one footpad sinking into a soft pocket
+## Phase 2: deformable regolith (first results)
+
+```bash
+experiments/phase2_deformable/run_phase2.sh all    # select -> columns -> soil-touchdown (Isaac) -> soil-plot
+```
+
+**Soil model.** The model is general and lives in `lunar_regolith.contact.sinkage`; it uses numpy only, so Isaac can load it.
+- **Loading.** The Reece form of Bekker's law, anchored to lunar values (Wong, after Costes et al.: n = 1, k<sub>c</sub> = 1.4 kN/m², k<sub>φ</sub> = 820 kN/m³). It scales with friction angle like Meyerhof's bearing-capacity factors; that scaling is an assumption.
+- **Layers.** Each sample's stiffness is a stress-weighted harmonic mean over the soil below the pad, so a soft pocket within reach counts.
+- **Unloading.** Sinkage is permanent: the soil springs back along a stiff unloading line (10× the loading stiffness).
+- **Shear.** Hysteretic Janosi shear (K = 1.8 cm).
+- **Damping.** Proportional to the current stiffness.
+- **Soil data.** The soil comes from the synthetic soil columns around each site.
+
+**Coupling (lander side, `soil_touchdown.py`).**
+- **Collision.** The footpads and the lowest leg parts no longer collide with the terrain; the body, engine bell and upper legs still collide rigidly.
+- **Pads.** Each pad is on a ball joint, so it lies flat on the soil and transmits no moment. Its sinkage is the depth of the pad centre below the unchanged DTM surface.
+- **Soil under each pad.** It is sampled at 19 points over the 0.91 m disc.
+- **Forces.** Each pad's normal and shear force is applied at the pad centre before every physics step, through PhysX's tensor API. The simulation runs at 480 Hz with a 0.003 s damping time constant; that combination keeps the coupling numerically stable even on firm soil.
+- **Final loads.** These are averaged over the last second, because a lightly loaded pad sitting at the bottom of its own dent chatters in and out of contact.
+
+**Experiment.**
+- **Sites.** The 5 sites where exactly one pad stands over a shallow soft pocket.
+- **Speeds.** Touchdown at 1, 2 and 3 m/s.
+- **Soils.** Heterogeneous soil (as generated) against a uniform control, in which every column is the site's median pocket-free column. That gives 30 touchdowns in total.
+
+| site (pocket pad) | pocket pad, max sinkage, uniform → heterogeneous (1 / 2 / 3 m/s) | differential sinkage, heterogeneous | final tilt, uniform → heterogeneous (3 m/s) |
+|---|---|---|---|
+| 20 (+X) | 1.5 → 8.0 / 2.4 → 14.8 / 3.2 → 21.2 cm | 6.5 / 11.7 / 16.4 cm | 2.4° → 0.7° |
+| 56 (+X) | 0.1 → 0.6 / 0.3 → 1.9 / 2.1 → 4.7 cm | 3.9 / 5.9 / 6.6 cm | 0.6° → 1.0° |
+| 82 (+X) | 3.2 → 6.3 / 6.4 → 12.3 / 9.9 → 19.6 cm | 8.3 / 10.1 / 17.0 cm | 7.4° → 6.6° |
+| 200 (+Y) | 2.3 → 6.2 / 3.8 → 8.5 / 5.2 → 13.3 cm | 4.9 / 5.3 / 7.5 cm | 1.3° → 1.6° |
+| 203 (−X) | 7.5 → 11.5 / 11.1 → 16.8 / 13.0 → 18.3 cm | 5.9 / 8.4 / 4.4 cm | 4.3° → 4.9° |
+
+1. **The pad over the soft pocket sinks 1.4 to 6 times deeper than on uniform soil.** It reaches up to 21 cm at 3 m/s. The
+   differential settlement between pads reaches 17 cm.
+2. **Even so, no landing toppled, and the tilt barely changed.** All 30 landings end upright on three pads. The final tilt changes by
+   −1.6° to +0.6°, and the peak tilt never exceeds 7.4°. **Slope still dominates.**
+3. **The direction of the effect depends on where the pocket is.** At site 20 the soft pad is on the high side, so its sinking levels
+   the lander (2.4° → 0.7°). Elsewhere the soft pad tilts the lander slightly further.
+4. **A pocket matters only if its pad carries load.** At site 56 the LM stands on its ±Y diagonal, and pad +X over the pocket carries
+   only 2–3% of the weight. That pad hardly sinks (0.6–4.7 cm).
+5. **The uniform control is not "the same soil minus the pocket".** The other pads also sink deeper on the heterogeneous soil,
+   because the median pocket-free column is firmer than much of the generated soil around these sites. Isolating the pocket alone
+   needs a pocket-removed control (planned).
+
+**Limits.** The soil is synthetic. The stiffness scaling, unloading factor and damping are assumptions. The leg struts are rigid:
+the LM's crushable shock absorbers are not modelled, so all impact energy goes into the soil. Rut memory is reset when a pad moves
+by more than its radius. Bulldozing (passive soil resistance on the pad rim) is not modelled. These are what the
+**Project Chrono SCM cross-check** (`experiments/phase2_crosscheck/`, in preparation) and later particle (DEM) or continuum (CRM)
+virtual plate tests are meant to test.
+
+![deformable soil comparison](docs/images/soil_touchdown_comparison.png)
+
+## Phase 2 preview: one footpad sinking into a soft pocket (illustrative compliance)
 
 ```bash
 experiments/phase2_deformable/run_phase2.sh all     # select -> simulate (Isaac) -> render (Isaac, RTX) -> plot
@@ -174,7 +228,10 @@ gives way. They are not yet derived from soil mechanics; deriving them is the Ph
 
 ```
 common/study_paths.py                     paths (.env.local / submodules) and git provenance
-experiments/phase2_deformable/            run_phase2.sh, select_soft_pocket_site.py, render_soft_pocket_touchdown.py (Isaac), plot_soft_pocket_touchdown.py
+experiments/phase2_deformable/            run_phase2.sh, select_soft_pocket_site.py, prepare_soil_columns.py, soil_touchdown.py (Isaac),
+                                          plot_soil_touchdown.py; preview: render_soft_pocket_touchdown.py (Isaac), plot_soft_pocket_touchdown.py
+experiments/phase2_crosscheck/            export_chrono_inputs.py (inputs for the Project Chrono SCM cross-check; Chrono scripts to follow)
+common/landing_geometry.py                terrain surface, slope, support margin, footpad geometry (shared by the touchdown scripts)
 experiments/phase1_static_friction/       run_phase1.sh, verify_friction_zones_in_physx.py (Isaac), heterogeneous_touchdown_test.py (Isaac),
                                           annotate_footpad_soil.py, plot_heterogeneous_touchdown.py
 external/                                 pinned submodules: lunar_regolith, apollo_lander_modeling

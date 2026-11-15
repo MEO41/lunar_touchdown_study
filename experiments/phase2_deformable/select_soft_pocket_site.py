@@ -101,7 +101,7 @@ def main():
                                           configuration.contact.site_lat_deg, configuration.contact.interface_friction)
     faces = pocket_faces(model, chosen["site_east_north"], arguments.radius)
     output = dict(
-        site=chosen, pocket=faces,
+        site=chosen, pocket=faces, candidates=candidates,
         compliance=dict(stiffness_per_contact_N_per_m=POCKET_STIFFNESS_PER_CONTACT, damping_per_contact_N_s_per_m=POCKET_DAMPING_PER_CONTACT,
                         stop_depth_m=POCKET_STOP_DEPTH_M, status="ILLUSTRATIVE - chosen to make the pocket visibly give way; not derived "
                         "from soil mechanics yet (Phase 2 work)"),
