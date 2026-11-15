@@ -7,7 +7,7 @@
 Terrain: the scene's Near2m tier (2 m DTM, exact triangle-mesh collider, rigid).  Friction:
   heterogeneous  the lunar_regolith soil friction overlay (per-face friction zones derived from SYNTHETIC soil fields; 8 zones, area-median 0.80)
                  is sublayered into the session layer, so the scene files are not changed;
-  uniform        the scene's regolith material 0.80 / 0.70 everywhere.
+  uniform        the scene's regolith material 0.80 / 0.70 everywhere (--uniform-friction changes it, e.g. for a small-perturbation sensitivity control).
 In BOTH modes the landers get a footpad contact material (friction 1.0) and the terrain materials use frictionCombineMode = multiply, so the
 footpads feel exactly the terrain coefficient (verify_friction_zones_in_physx.py checked this; without it PhysX would average with its default
 0.5, which is what the original drop test did: effective 0.65 / 0.60).
@@ -40,6 +40,8 @@ parser.add_argument("--points", type=Path, default=study_paths.LANDER_NEAR_SITES
 parser.add_argument("--overlay", type=Path, default=SOIL_CONTACT_DIRECTORY / "soil_friction_overlay_World_Terrain_Near2m.usda")
 parser.add_argument("--faces", type=Path, default=SOIL_CONTACT_DIRECTORY / "soil_friction_faces_World_Terrain_Near2m.npz")
 parser.add_argument("--friction-mode", choices=("heterogeneous", "uniform"), required=True)
+parser.add_argument("--uniform-friction", type=float, nargs=2, default=(0.8, 0.7), metavar=("STATIC", "DYNAMIC"),
+                    help="terrain friction in uniform mode (default 0.8 0.7)")
 parser.add_argument("--touchdown-speed", type=float, default=2.0, help="vertical speed at first contact (m/s)")
 parser.add_argument("--horizontal-speed", type=float, default=0.0, help="horizontal speed at release (m/s), fixed random heading per site")
 parser.add_argument("--clearance", type=float, default=0.25, help="gap (m) between the lowest footpad point and the ground at release (a few physics steps of free flight, so the pre-contact speed is measurable)")
@@ -69,7 +71,7 @@ PHYSICS_STEP_SECONDS = 1.0 / 60.0
 PAD_ASSIGNMENT_RADIUS_M = 1.2
 LOADED_SHARE = 0.002                    # a pad carrying > 0.2 % of the total vertical contact load is in contact
 FOOTPAD_CONTACT_FRICTION = 1.0
-UNIFORM_FRICTION = (0.8, 0.7)
+UNIFORM_FRICTION = tuple(arguments.uniform_friction)
 TERRAIN_MESH_PATH = "/World/Terrain/Near2m"
 
 # ----------------------------------------------------------------------------------------------------------------- stage

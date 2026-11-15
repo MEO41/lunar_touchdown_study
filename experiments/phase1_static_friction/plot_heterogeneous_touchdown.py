@@ -9,11 +9,18 @@ found, pairs the landings site by site, and writes:
   docs/images/heterogeneous_touchdown_outcomes.png          outcome rates and landing-dynamics medians, uniform vs heterogeneous
   docs/images/heterogeneous_touchdown_paired.png            the same site in both modes: peak tilt and final slide
   docs/images/heterogeneous_touchdown_pad_slip.png          footpad slip against the friction under that pad (heterogeneous runs)
+  docs/images/heterogeneous_touchdown_noise_floor.png       site-by-site differences, heterogeneous vs uniform, next to the same mode run twice
+Paired statistics per speed: exact McNemar test on toppling, sign test on slide, and the subset of landings whose pads stand on clearly
+different friction (contrast > HIGH_CONTRAST).  Controls in results/phase1/repeatability/ (compared with the original case of the same mode and speed):
+  heterogeneous_touchdown_<mode>_v<speed>_repeat.json            unchanged re-run: differences would be simulation noise (determinism check)
+  heterogeneous_touchdown_<mode>_v<speed>_perturbed_mu<mu>.json  uniform friction nudged (e.g. 0.80 -> 0.82): the sensitivity of the
+                                                                 landings to ANY small change, the reference for the heterogeneous effect
 Outcome classes follow the lander repository's plot_drop_test.py (toppled = final tilt > 45 deg; upright = at rest on >= 3 pads, COM inside, tilt <= slope + 5 deg).
 All terrain friction values come from SYNTHETIC soil fields (lunar_regolith, uncalibrated); the terrain is rigid (Phase 1).
 """
 import csv
 import json
+import math
 import re
 import sys
 from pathlib import Path
@@ -28,10 +35,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "common"))
 import study_paths  # noqa: E402
 
 RENDERS = study_paths.phase_results_directory("phase1", "touchdown")
+CONTROLS_DIRECTORY = study_paths.phase_results_directory("phase1", "repeatability")
+HIGH_CONTRAST = 0.2           # max - min static friction under the four pads
 SUMMARY_DIRECTORY = study_paths.phase_results_directory("phase1")
 IMAGES = study_paths.FIGURES_DIRECTORY
 INK, MUTED, SURFACE, GRID = "#1a1a19", "#5f5e5a", "#fcfcfb", "#d9d8d4"
 MODE_COLORS = {"uniform": "#2a78d6", "heterogeneous": "#eb6834"}          # categorical slots 1 and 2 (fixed order)
+REPEAT_COLOR = "#8a8984"                                                       # neutral: same mode run twice
 MODE_LABELS = {"uniform": "uniform friction 0.80 / 0.70", "heterogeneous": "heterogeneous soil friction (median 0.80)"}
 PADS = ("+X", "+Y", "-X", "-Y")
 plt.rcParams.update({"figure.facecolor": SURFACE, "axes.facecolor": SURFACE, "savefig.facecolor": SURFACE, "text.color": INK,
@@ -96,10 +106,55 @@ def summarise(results):
         pad_friction_contrast_median=median([r["pad_mu_contrast"] for r in results]))
 
 
+def load_controls():
+    """{(mode, speed, control name): results list} for the control runs ("repeat" or "perturbed_mu<value>")."""
+    found = {}
+    for path in sorted(CONTROLS_DIRECTORY.glob("heterogeneous_touchdown_*_v*_*.json")):
+        match = re.fullmatch(r"heterogeneous_touchdown_(uniform|heterogeneous)_v([0-9.]+)_(repeat|perturbed_mu[0-9.]+)\.json", path.name)
+        if match:
+            found[(match.group(1), float(match.group(2)), match.group(3))] = json.loads(path.read_text())["results"]
+    return found
+
+
+def control_label(mode, speed, control):
+    """Short label of a control comparison for tables and figures."""
+    if control == "repeat":
+        return f"{mode} run twice\n{speed:g} m/s"
+    return f"{mode} 0.80 vs {control[len('perturbed_mu'):]}\n{speed:g} m/s"
+
+
 def paired(uniform, heterogeneous):
     """Site-by-site pairs (same site, same speed) of the two friction modes."""
     by_index = {r["idx"]: r for r in uniform}
     return [(by_index[h["idx"]], h) for h in heterogeneous if h["idx"] in by_index]
+
+
+def exact_two_sided_binomial_p(successes, trials):
+    """Two-sided exact binomial test against p = 0.5 (McNemar's exact test on discordant pairs, or a sign test)."""
+    if trials == 0:
+        return 1.0
+    tail = sum(math.comb(trials, k) for k in range(0, min(successes, trials - successes) + 1)) / 2.0 ** trials
+    return min(1.0, 2.0 * tail)
+
+
+def pair_statistics(pairs):
+    """Differences between two runs of the same sites (first, second): outcome changes, McNemar on toppling, sign test on slide, tilt differences."""
+    first_outcomes, second_outcomes = [outcome(a) for a, _ in pairs], [outcome(b) for _, b in pairs]
+    toppled_only_second = sum(a != "toppled" and b == "toppled" for a, b in zip(first_outcomes, second_outcomes))
+    toppled_only_first = sum(a == "toppled" and b != "toppled" for a, b in zip(first_outcomes, second_outcomes))
+    slide_differences = np.array([b["slide_m"] - a["slide_m"] for a, b in pairs])
+    slide_higher, slide_lower = int((slide_differences > 0).sum()), int((slide_differences < 0).sum())
+    tilt_differences = np.array([b["peak_tilt_deg"] - a["peak_tilt_deg"] for a, b in pairs])
+    return dict(
+        pairs=len(pairs), outcome_changes=int(sum(a != b for a, b in zip(first_outcomes, second_outcomes))),
+        toppled_only_second=toppled_only_second, toppled_only_first=toppled_only_first,
+        toppling_mcnemar_exact_p=exact_two_sided_binomial_p(toppled_only_second, toppled_only_second + toppled_only_first),
+        slide_higher_in_second=slide_higher, slide_lower_in_second=slide_lower,
+        slide_sign_test_p=exact_two_sided_binomial_p(slide_higher, slide_higher + slide_lower),
+        slide_difference_median_m=median(slide_differences),
+        peak_tilt_absolute_difference_median_deg=median(np.abs(tilt_differences)),
+        peak_tilt_absolute_difference_p90_deg=percentile(np.abs(tilt_differences), 90),
+        identical_peak_tilt=int((np.abs(tilt_differences) < 1e-6).sum()))
 
 
 def outcome_figure(summary, speeds, path):
@@ -161,7 +216,7 @@ def pad_slip_figure(found, speeds, path):
         axis = axes[0, column]
         heterogeneous = found.get(("heterogeneous", speed), [])
         mu = np.array([p["effective_mu_static"] for r in heterogeneous for p in r["pads"].values() if p["slip_m"] is not None])
-        slip = np.array([p["slip_m"] for r in heterogeneous for p in r["pads"].values() if p["slip_m"] is not None])
+        slip = np.maximum(np.array([p["slip_m"] for r in heterogeneous for p in r["pads"].values() if p["slip_m"] is not None]), 1e-3)
         if mu.size:
             axis.scatter(mu, slip, s=6, color=MODE_COLORS["heterogeneous"], alpha=0.45, linewidth=0)
             edges = np.quantile(mu, np.linspace(0, 1, 9))
@@ -175,12 +230,52 @@ def pad_slip_figure(found, speeds, path):
         uniform_slip = median([p["slip_m"] for r in found.get(("uniform", speed), []) for p in r["pads"].values() if p["slip_m"] is not None])
         if np.isfinite(uniform_slip):
             axis.axhline(uniform_slip, color=MODE_COLORS["uniform"], lw=1.5, ls="--", label=f"uniform-run median ({uniform_slip:.2f} m)")
+        axis.set_yscale("log")
         axis.set_xlabel("static friction under the pad (zone)")
-        axis.set_ylabel("footpad slip from first contact to rest (m)")
+        axis.set_ylabel("footpad slip from first contact to rest (m, log)")
         axis.set_title(f"touchdown {speed:g} m/s", fontsize=10, color=INK)
         axis.grid(True, color=GRID, lw=0.5)
         axis.legend(fontsize=8, frameon=False, loc="upper right")
     figure.suptitle("Footpad slip vs local soil friction (heterogeneous runs). SYNTHETIC soil friction, rigid terrain", fontsize=11)
+    figure.savefig(path, dpi=130)
+    plt.close(figure)
+
+
+def noise_floor_figure(comparisons, path):
+    """Site-by-site differences: heterogeneous vs uniform per speed, next to the same mode run twice (simulation noise floor)."""
+    labels = [label for label, _, _ in comparisons]
+    colors = [REPEAT_COLOR if "twice" in label else MODE_COLORS["uniform"] if is_control else MODE_COLORS["heterogeneous"]
+              for label, _, is_control in comparisons]
+    panels = (("outcome_changes", "Sites whose outcome class changed (of 300)"),
+              ("peak_tilt_absolute_difference_median_deg", "Median |peak tilt difference| (deg)"))
+    figure, axes = plt.subplots(1, 3, figsize=(13.5, 4.2), constrained_layout=True)
+    for axis, (key, title) in zip(axes[:2], panels):
+        values = [statistics[key] for _, statistics, _ in comparisons]
+        bars = axis.bar(range(len(values)), values, 0.7, color=colors)
+        for bar, value in zip(bars, values):
+            axis.text(bar.get_x() + bar.get_width() / 2, bar.get_height(), f"{value:.2f}" if isinstance(value, float) else str(value),
+                      ha="center", va="bottom", fontsize=8, color=INK)
+        axis.set_xticks(range(len(values)), labels, fontsize=8)
+        axis.set_title(title, fontsize=10, color=INK)
+        axis.grid(True, axis="y", color=GRID, lw=0.6)
+        axis.set_axisbelow(True)
+    axis = axes[2]
+    for label, statistics, is_control in comparisons:
+        if "twice" in label:
+            continue                       # identical re-run: all differences are zero, nothing to draw on a log axis
+        if not is_control and not label.endswith("3 m/s"):
+            continue                       # compare like with like: the controls are at 3 m/s
+        differences = np.sort(np.abs(statistics["peak_tilt_differences"]))
+        axis.plot(np.maximum(differences, 1e-4), np.linspace(0, 1, differences.size), lw=2,
+                  color=MODE_COLORS["uniform"] if is_control else MODE_COLORS["heterogeneous"], label=label.replace("\n", " "))
+    axis.set_xscale("log")
+    axis.set_xlabel("|peak tilt difference| at the same site (deg, log)")
+    axis.set_ylabel("fraction of sites")
+    axis.set_title("Site-by-site |peak tilt difference|, 3 m/s", fontsize=10, color=INK)
+    axis.grid(True, color=GRID, lw=0.5)
+    axis.legend(fontsize=7, frameon=False, loc="lower right")
+    figure.suptitle("Is the heterogeneous-friction effect larger than the landings' sensitivity to any small change?  orange: heterogeneous vs "
+                    "uniform;  blue: uniform 0.80 vs 0.82;  grey: identical re-run\nSYNTHETIC soil friction, rigid terrain", fontsize=11)
     figure.savefig(path, dpi=130)
     plt.close(figure)
 
@@ -201,11 +296,26 @@ def main():
                 peak_tilt_difference_median_deg=median([b["peak_tilt_deg"] - a["peak_tilt_deg"] for a, b in pairs]),
                 slide_difference_median_m=median([b["slide_m"] - a["slide_m"] for a, b in pairs]),
                 min_margin_difference_median_m=median([(b["min_support_margin_m"] or np.nan) - (a["min_support_margin_m"] or np.nan) for a, b in pairs]),
-                outcome_changes=sorted({f"{outcome(a)} -> {outcome(b)}" for a, b in pairs if outcome(a) != outcome(b)}))
+                outcome_changes=sorted({f"{outcome(a)} -> {outcome(b)}" for a, b in pairs if outcome(a) != outcome(b)}),
+                statistics=pair_statistics(pairs),
+                high_contrast=dict(threshold=HIGH_CONTRAST, **pair_statistics([(a, b) for a, b in pairs if b["pad_mu_contrast"] > HIGH_CONTRAST])))
+    controls = load_controls()
+    comparisons = []
+    for speed in speeds:
+        pairs = paired(found.get(("uniform", speed), []), found.get(("heterogeneous", speed), []))
+        if pairs:
+            comparisons.append((f"heterogeneous vs\nuniform {speed:g} m/s", dict(pair_statistics(pairs), peak_tilt_differences=[
+                b["peak_tilt_deg"] - a["peak_tilt_deg"] for a, b in pairs]), False))
+    for (mode, speed, control), control_results in sorted(controls.items()):
+        pairs = paired(found.get((mode, speed), []), control_results)
+        if pairs:
+            summary[f"control_{mode}_v{speed:g}_{control}"] = pair_statistics(pairs)
+            comparisons.append((control_label(mode, speed, control), dict(pair_statistics(pairs), peak_tilt_differences=[
+                b["peak_tilt_deg"] - a["peak_tilt_deg"] for a, b in pairs]), True))
     summary["provenance"] = study_paths.git_provenance()
     (SUMMARY_DIRECTORY / "heterogeneous_touchdown_summary.json").write_text(json.dumps(summary, indent=2))
     del summary["provenance"]
-    rows = [dict(case=k, **v) for k, v in summary.items() if not k.startswith("paired")]
+    rows = [dict(case=k, **v) for k, v in summary.items() if not k.startswith(("paired", "control"))]
     with open(SUMMARY_DIRECTORY / "heterogeneous_touchdown_summary.csv", "w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
         writer.writeheader()
@@ -214,10 +324,12 @@ def main():
     outcome_figure(summary, speeds, IMAGES / "heterogeneous_touchdown_outcomes.png")
     paired_figure(found, speeds, IMAGES / "heterogeneous_touchdown_paired.png")
     pad_slip_figure(found, speeds, IMAGES / "heterogeneous_touchdown_pad_slip.png")
+    if comparisons:
+        noise_floor_figure(comparisons, IMAGES / "heterogeneous_touchdown_noise_floor.png")
     print(f"{'case':26s} {'n':>4s} {'upright':>7s} {'tilted':>6s} {'toppled':>7s} {'moving':>6s} {'v_td':>5s} {'tilt95':>6s} {'slide':>6s} "
           f"{'padslip':>7s} {'margin05':>8s} {'maxshare':>8s}")
     for key, s in summary.items():
-        if key.startswith("paired"):
+        if key.startswith(("paired", "control")):
             continue
         print(f"{key:26s} {s['landings']:4d} {s['upright']:7d} {s['tilted']:6d} {s['toppled']:7d} {s['moving']:6d} {s['touchdown_speed_median']:5.2f} "
               f"{s['peak_tilt_p95_deg']:6.1f} {s['slide_median_m']:6.2f} {s['pad_slip_median_m']:7.3f} {s['min_support_margin_p05_m']:8.2f} "
@@ -227,6 +339,15 @@ def main():
             print(f"{key}: same outcome {s['same_outcome']}/{s['pairs']}; median diff (heterogeneous - uniform): peak tilt "
                   f"{s['peak_tilt_difference_median_deg']:+.2f} deg, slide {s['slide_difference_median_m']:+.3f} m, min margin "
                   f"{s['min_margin_difference_median_m']:+.3f} m; changes: {s['outcome_changes']}")
+    print(f"{'comparison (first -> second)':34s} {'pairs':>5s} {'changed':>7s} {'topple+':>7s} {'topple-':>7s} {'McNemar p':>9s} "
+          f"{'slide up/down':>13s} {'sign p':>7s} {'|dtilt| med':>11s} {'identical':>9s}")
+    rows = [(f"uniform -> heterogeneous {k[len('paired_'):]}", s["statistics"]) for k, s in summary.items() if k.startswith("paired")]
+    rows += [(f"  same, contrast > {HIGH_CONTRAST:g} {k[len('paired_'):]}", s["high_contrast"]) for k, s in summary.items() if k.startswith("paired")]
+    rows += [(f"control {k[len('control_'):]}", s) for k, s in summary.items() if k.startswith("control")]
+    for label, s in rows:
+        print(f"{label:34s} {s['pairs']:5d} {s['outcome_changes']:7d} {s['toppled_only_second']:7d} {s['toppled_only_first']:7d} "
+              f"{s['toppling_mcnemar_exact_p']:9.3f} {s['slide_higher_in_second']:6d}/{s['slide_lower_in_second']:<6d} {s['slide_sign_test_p']:7.3f} "
+              f"{s['peak_tilt_absolute_difference_median_deg']:11.3f} {s['identical_peak_tilt']:9d}")
 
 
 if __name__ == "__main__":
