@@ -182,11 +182,54 @@ experiments/phase2_deformable/run_phase2.sh all    # select -> columns -> soil-t
 
 **Limits.** The soil is synthetic. The stiffness scaling, unloading factor and damping are assumptions. The leg struts are rigid:
 the LM's crushable shock absorbers are not modelled, so all impact energy goes into the soil. Rut memory is reset when a pad moves
-by more than its radius. Bulldozing (passive soil resistance on the pad rim) is not modelled. These are what the
-**Project Chrono SCM cross-check** (`experiments/phase2_crosscheck/`, in preparation) and later particle (DEM) or continuum (CRM)
-virtual plate tests are meant to test.
+by more than its radius. Bulldozing (passive soil resistance on the pad rim) is not modelled.
 
 ![deformable soil comparison](docs/images/soil_touchdown_comparison.png)
+
+### Cross-check with Project Chrono SCM
+
+```bash
+experiments/phase2_crosscheck/run_crosscheck.sh all   # export -> plate -> touchdown (PyChrono) -> compare; needs CHRONO_PYTHON in .env.local
+```
+
+[Project Chrono](https://projectchrono.org) is an open-source multibody engine (BSD-3) from outside this project. Its SCM deformable terrain implements the same
+soil laws (Bekker–Wong pressure-sinkage, Janosi shear) on a grid that deforms. The cross-check reruns all 30 Phase 2 touchdowns in
+SCM with identical inputs:
+- the same Near2m terrain patch (SCM deforms only its own copy);
+- per-location SCM parameters from the same soil columns (our layered curve linearised to a single Bekker stiffness at 5 cm sinkage, plus our shallow strength, unloading stiffness and damping);
+- the same lander mass properties;
+- the same release state.
+
+The footpads here are separate discs on **spherical joints**, as on the real LM.
+
+**Setup used.** PyChrono 10.0.0 with the vehicle module, from the `projectchrono` conda channel; the conda-forge build has no SCM.
+- **Mesh position.** SCM's mesh initialisation needs the mesh near the origin, so every scenario runs in a frame centred on its site.
+- **Pad mass.** 50 kg pad discs keep the ball-jointed pads stable at 1 ms steps.
+- **Step size.** Firm control soil at site 20 needed 0.25 ms (refined automatically when a run diverged).
+- **Grid.** SCM grid 0.1 m; 0.05 m gave the same pad sinkage to within 0.4 cm.
+
+**Results.**
+- **Plate test.** A 0.91 m footpad disc was pushed into flat SCM soil with lunar_regolith's reference lunar soil. SCM's loading
+  pressure is **1.011× ours** at the median. Unloading releases the pressure at **8.978 cm in SCM against 8.990 cm in ours**. The two
+  implementations of the law agree.
+- **30 touchdowns.** Pad sinkage correlates at **r = 0.97** (median difference −1.2 cm). Final tilt differs by **0.15°** at the median.
+  The **pocket effect** (pocket-pad sinkage, heterogeneous minus uniform) correlates at **r = 0.96**. No landing toppled in either
+  engine.
+- **Where they differ.**
+  - **Deep sinkage (above about 12 cm).** Chrono sinks less, because its single stiffness per point cannot represent our layered
+    curve, which softens as the loaded zone reaches deeper soft layers. Layering matters exactly where pockets act.
+  - **Sloped sites (4°, sites 82 and 203).** The Chrono lander keeps creeping 2–5 mm/s downslope at an unchanged tilt, so 11 of 30
+    landings never pass the rest test there. SCM's slip formulation lets a statically loaded pad keep slipping, while our hysteretic
+    Janosi shear holds.
+
+**What it confirms.** An independent engine and contact formulation reproduces our coupling's sinkage, tilt and pocket effect.
+That includes a different pad model: real ball joints instead of force points. So the Phase 2 conclusions do not hinge on our own
+implementation.
+
+**What it cannot confirm.** The soil constants themselves. Both engines use the same assumed parameters. Calibrating them needs
+particle (DEM) or continuum (CRM) virtual plate tests, or measured data. That is the next step.
+
+![Chrono vs Isaac](docs/images/chrono_vs_isaac.png)
 
 ## Phase 2 preview: one footpad sinking into a soft pocket (illustrative compliance)
 
@@ -230,7 +273,8 @@ gives way. They are not yet derived from soil mechanics; deriving them is the Ph
 common/study_paths.py                     paths (.env.local / submodules) and git provenance
 experiments/phase2_deformable/            run_phase2.sh, select_soft_pocket_site.py, prepare_soil_columns.py, soil_touchdown.py (Isaac),
                                           plot_soil_touchdown.py; preview: render_soft_pocket_touchdown.py (Isaac), plot_soft_pocket_touchdown.py
-experiments/phase2_crosscheck/            export_chrono_inputs.py (inputs for the Project Chrono SCM cross-check; Chrono scripts to follow)
+experiments/phase2_crosscheck/            run_crosscheck.sh, export_chrono_inputs.py, chrono_plate_test.py (PyChrono), chrono_scm_touchdown.py (PyChrono),
+                                          compare_chrono_isaac.py
 common/landing_geometry.py                terrain surface, slope, support margin, footpad geometry (shared by the touchdown scripts)
 experiments/phase1_static_friction/       run_phase1.sh, verify_friction_zones_in_physx.py (Isaac), heterogeneous_touchdown_test.py (Isaac),
                                           annotate_footpad_soil.py, plot_heterogeneous_touchdown.py
