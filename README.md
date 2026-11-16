@@ -186,6 +186,28 @@ by more than its radius. Bulldozing (passive soil resistance on the pad rim) is 
 
 ![deformable soil comparison](docs/images/soil_touchdown_comparison.png)
 
+### Rendered: the lander in its imprints
+
+`run_phase2.sh appearance [site] [speed] [mode]` takes one Phase 2 landing and renders it on lunar_regolith's
+field-driven surface, with each footpad sitting in its own imprint. It runs three steps:
+
+1. It re-runs the landing with `--record-poses`. For site 20 at 3 m/s on heterogeneous soil, the re-run
+   reproduces the suite: pocket pad 18.7 cm, tilt 0.735° against 0.728°.
+2. `build_touchdown_appearance.py` builds the render scene.
+   - **Surface:** the lander scene's `Near2m` tier, the surface the sinkage was measured against, refined exactly
+     near the lander. `Near2m` itself is unchanged and only hidden for rendering.
+   - **Imprint depth:** each pad's final sinkage, or the permanent dent if the pad has lifted.
+   - **Wall slope:** the local soil friction angle.
+   - **Check:** the rendered floor depth equals the simulated sinkage (difference 1e-16 m).
+3. `render_touchdown_appearance.py` renders the scene in Isaac Sim with path tracing. The lander stands at its
+   recorded rest pose. The same views are repeated without the lander, so the dents are visible.
+
+![lander in its imprints](docs/images/touchdown_appearance_site20_heterogeneous_v3.jpg)
+
+At site 20 the +X pad sits 18.7 cm deep, over the buried soft pocket. Seen from above, the surface over the pocket
+looks like the soil around it: the pocket starts 0.3–0.6 m down, and the appearance reflects only surface fields.
+Only the depth of the dent reveals the pocket. The soil and the appearance mapping are synthetic and assumed.
+
 ### Cross-check with Project Chrono SCM
 
 ```bash
@@ -273,6 +295,7 @@ gives way. They are not yet derived from soil mechanics; deriving them is the Ph
 common/study_paths.py                     paths (.env.local / submodules) and git provenance
 experiments/phase2_deformable/            run_phase2.sh, select_soft_pocket_site.py, prepare_soil_columns.py, soil_touchdown.py (Isaac),
                                           plot_soil_touchdown.py; preview: render_soft_pocket_touchdown.py (Isaac), plot_soft_pocket_touchdown.py
+                                          appearance: build_touchdown_appearance.py, render_touchdown_appearance.py (Isaac)
 experiments/phase2_crosscheck/            run_crosscheck.sh, export_chrono_inputs.py, chrono_plate_test.py (PyChrono), chrono_scm_touchdown.py (PyChrono),
                                           compare_chrono_isaac.py
 common/landing_geometry.py                terrain surface, slope, support margin, footpad geometry (shared by the touchdown scripts)
